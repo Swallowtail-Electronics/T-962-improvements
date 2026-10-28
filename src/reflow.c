@@ -51,6 +51,8 @@ static ReflowMode_t mymode = REFLOW_STANDBY;
 static uint16_t numticks = 0;
 
 static int standby_logging = 0;
+static uint8_t last_heat = 0;
+static uint8_t last_fan = 0;
 
 static int32_t Reflow_Work(void) {
 	static ReflowMode_t oldmode = REFLOW_INITIAL;
@@ -89,6 +91,8 @@ static int32_t Reflow_Work(void) {
 	}
 	Set_Heater(heat);
 	Set_Fan(fan);
+	last_heat = heat;
+	last_fan = fan;
 
 	if (mymode != oldmode) {
 		printf("\n# Time,  Temp0, Temp1, Temp2, Temp3,  Set,Actual, Heat, Fan,  ColdJ, Mode");
@@ -216,6 +220,18 @@ uint8_t Reflow_IsDone(void) {
 
 uint16_t Reflow_GetSetpoint(void) {
 	return intsetpoint;
+}
+
+uint8_t Reflow_GetFan(void) {
+	return last_fan;
+}
+
+uint8_t Reflow_GetHeat(void) {
+	return last_heat;
+}
+
+ReflowMode_t Reflow_GetMode(void) {
+	return mymode;
 }
 
 void Reflow_SetBakeTimer(int seconds) {

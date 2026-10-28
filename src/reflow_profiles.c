@@ -180,6 +180,52 @@ int Reflow_SaveEEProfile(void) {
 	return retval;
 }
 
+int Reflow_WriteCustom1(const uint16_t* temps) {
+	uint16_t swapped[NUMPROFILETEMPS];
+	uint8_t magic[2];
+	int32_t rc;
+
+	if (!temps) {
+		return -1;
+	}
+	for (int i = 0; i < NUMPROFILETEMPS; i++) {
+		uint16_t value = temps[i];
+		// 0 ends the curve. Any other point has to be a legal setpoint.
+		if (value > SETPOINT_MAX || (value != 0 && value < SETPOINT_MIN)) {
+			return -1;
+		}
+		swapped[i] = value;
+	}
+
+	// Profile words are big-endian in EEPROM. NV storage at 0x62 is not touched.
+	ByteswapTempProfile(swapped);
+	rc = EEPROM_Write(2, (uint8_t*)swapped, NUMPROFILETEMPS * 2);
+	if (rc) {
+		return -2;
+	}
+	magic[0] = 0x56;
+	magic[1] = 0x57;
+	rc = EEPROM_Write(0, magic, 2);
+	if (rc) {
+		return -2;
+	}
+	magic[0] = 0x58;
+	magic[1] = 0x59;
+	rc = EEPROM_Write(0x7e, magic, 2);
+	if (rc) {
+		return -2;
+	}
+
+	for (int i = 0; i < NUMPROFILETEMPS; i++) {
+		ee1.temperatures[i] = temps[i];
+	}
+	return 0;
+}
+
+int Reflow_SelectCustom1(void) {
+	return Reflow_SelectProfileIdx(NUMPROFILES - 2);
+}
+
 void Reflow_ListProfiles(void) {
 	for (int i = 0; i < NUMPROFILES; i++) {
 		printf("%d: %s\n", i, profiles[i]->name);

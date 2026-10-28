@@ -27,6 +27,8 @@ int Reflow_SelectEEProfileIdx(int idx);
 
 int Reflow_GetEEProfileIdx(void);
 int Reflow_SaveEEProfile(void);
+int Reflow_WriteCustom1(const uint16_t* temps);
+int Reflow_SelectCustom1(void);
 void Reflow_ListProfiles(void);
 const char* Reflow_GetProfileName(void);
 uint16_t Reflow_GetSetpointAtIdx(uint8_t idx);
