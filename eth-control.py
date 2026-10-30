@@ -117,7 +117,7 @@ def write_profile(host, port, temps):
         print("CUSTOM #1 stored on %s" % host)
         return
     if status == 1:
-        raise SystemExit("Oven rejected the profile")
+        raise SystemExit("Oven rejected the profile. A write is accepted only in standby")
     raise SystemExit("Oven failed while writing EEPROM (status %u)" % status)
 
 

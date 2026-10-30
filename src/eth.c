@@ -142,6 +142,10 @@ static uint16_t rx_next = RXSTART;
 static uint16_t ip_id = 1;
 static uint8_t rxbuf[256];
 static uint8_t txbuf[256];
+static uint8_t ack_mac[6];
+static uint8_t ack_ip[4];
+static uint16_t ack_port;
+static uint8_t ack_armed;
 
 static void spi_begin(void) {
 	FIO0CLR = ETH_PIN_SCK;
@@ -283,20 +287,20 @@ static void enc_rx_reset(void) {
 }
 
 static int enc_tx(const uint8_t* frame, uint16_t len) {
-	uint8_t idle = 0;
 	if (len == 0 || len > 1514) {
 		return -1;
 	}
 	for (uint16_t i = 0; i < 1000; i++) {
-		if ((enc_read(ECON1) & ECON1_TXRTS) == 0) {
-			idle = 1;
-			break;
-		}
-		if (enc_read(EIR) & EIR_TXERIF) {
+		/* Errata 12: a half-duplex abort can leave TXRTS stuck. */
+		if ((enc_read(EIR) & EIR_TXERIF) != 0 || (enc_read(ECON1) & ECON1_TXRTS) == 0) {
 			break;
 		}
 	}
-	if (!idle) {
+	/* Errata 12: reset the transmitter whenever TXERIF is set, including
+	 * an abort whose TXRTS bit has already cleared. A wait that ends
+	 * with TXRTS still set is the same stalled state. Clearing TXRST can
+	 * set TXERIF again, so the flag is cleared after the reset. */
+	if ((enc_read(EIR) & EIR_TXERIF) != 0 || (enc_read(ECON1) & ECON1_TXRTS) != 0) {
 		enc_bfs(ECON1, ECON1_TXRST);
 		enc_bfc(ECON1, ECON1_TXRST);
 	}
@@ -539,40 +543,60 @@ static int ip_for_us(const uint8_t* ip) {
 	return 0;
 }
 
-static void handle_write(const uint8_t* ip, uint16_t sport, const uint8_t* payload, uint16_t plen) {
-	uint8_t status = 1;
+static void send_ack(const uint8_t* mac, const uint8_t* ip, uint16_t port, uint8_t status) {
 	uint8_t ack[6];
-	if (plen >= 6 + (NUMPROFILETEMPS * 2) && payload[5] == NUMPROFILETEMPS) {
-		uint16_t temps[NUMPROFILETEMPS];
-		int rc;
-		for (int i = 0; i < NUMPROFILETEMPS; i++) {
-			uint16_t off = 6 + (i * 2);
-			temps[i] = payload[off] | ((uint16_t)payload[off + 1] << 8);
-		}
-		rc = Reflow_WriteCustom1(temps);
-		if (rc == 0) {
-			status = 0;
-			printf("\nCUSTOM #1 stored from ethernet");
-			if (Reflow_GetMode() != REFLOW_REFLOW) {
-				Reflow_SelectCustom1();
-			}
-		} else if (rc == -1) {
-			status = 1;
-			printf("\nCUSTOM #1 ethernet write rejected");
-		} else {
-			status = 2;
-			printf("\nCUSTOM #1 ethernet write failed");
-		}
-	} else {
-		printf("\nCUSTOM #1 ethernet write rejected");
-	}
 	ack[0] = 'T';
 	ack[1] = '9';
 	ack[2] = '6';
 	ack[3] = '2';
 	ack[4] = ETH_TYPE_ACK;
 	ack[5] = status;
-	send_udp(rxbuf + 6, ip + 12, sport, ack, sizeof(ack));
+	send_udp(mac, ip, port, ack, sizeof(ack));
+}
+
+static void handle_write(const uint8_t* ip, uint16_t sport, const uint8_t* payload, uint16_t plen) {
+	if (plen >= 6 + (NUMPROFILETEMPS * 2) && payload[5] == NUMPROFILETEMPS) {
+		uint16_t temps[NUMPROFILETEMPS];
+		for (int i = 0; i < NUMPROFILETEMPS; i++) {
+			uint16_t off = 6 + (i * 2);
+			temps[i] = payload[off] | ((uint16_t)payload[off + 1] << 8);
+		}
+		/* Queued only. EEPROM runs from CUSTOM1_WORK, outside this handler. */
+		if (Reflow_WriteCustom1(temps) == 0) {
+			memcpy(ack_mac, rxbuf + 6, sizeof(ack_mac));
+			memcpy(ack_ip, ip + 12, sizeof(ack_ip));
+			ack_port = sport;
+			ack_armed = 1;
+			Sched_SetState(CUSTOM1_WORK, 2, 0);
+			return;
+		}
+	}
+	printf("\nCUSTOM #1 ethernet write rejected");
+	send_ack(rxbuf + 6, ip + 12, sport, 1);
+}
+
+/* One EEPROM page per call so the 250 ms PID loop and the watchdog feed keep running. */
+static int32_t Eth_Custom1Work(void) {
+	int rc = Reflow_ServiceCustom1();
+	uint8_t status;
+	if (rc > 0) {
+		return 0;
+	}
+	if (ack_armed) {
+		if (rc == 0) {
+			status = 0;
+			printf("\nCUSTOM #1 stored from ethernet");
+		} else if (rc == -2) {
+			status = 2;
+			printf("\nCUSTOM #1 ethernet write failed");
+		} else {
+			status = 1;
+			printf("\nCUSTOM #1 ethernet write rejected");
+		}
+		send_ack(ack_mac, ack_ip, ack_port, status);
+		ack_armed = 0;
+	}
+	return -1;
 }
 
 static void handle_arp(uint16_t len) {
@@ -767,6 +791,7 @@ void Eth_Init(void) {
 		eth_link ? "link up" : "link down",
 		ETH_IP_A, ETH_IP_B, ETH_IP_C, ETH_IP_D, ETH_UDP_PORT);
 	Sched_SetWorkfunc(ETH_WORK, Eth_Work);
+	Sched_SetWorkfunc(CUSTOM1_WORK, Eth_Custom1Work);
 	Sched_SetState(ETH_WORK, 2, 0);
 }
 

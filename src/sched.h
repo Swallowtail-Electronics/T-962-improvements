@@ -30,6 +30,7 @@ typedef enum eTask {
 	SYSFANSENSE_WORK,
 	NV_WORK,
 	ETH_WORK,
+	CUSTOM1_WORK,
 	SCHED_NUM_ITEMS // Last value
 } Task_t;
 

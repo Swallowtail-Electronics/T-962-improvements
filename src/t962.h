@@ -57,7 +57,8 @@
  * P0.7/SSEL0 is the 1-wire sensor, and P0.18/P0.19/P0.20 are LCD E, LCD RW
  * and the S key. The controller SPI bus for the ENC28J60 is GPIO instead:
  *   SCK P0.17, MOSI P0.6, MISO P0.5, CS P0.10, RESET P0.30.
- * The oven broadcasts status on UDP/1962 and accepts a CUSTOM #1 profile there.
+ * The oven broadcasts status on UDP/1962 and accepts a CUSTOM #1 profile
+ * there while it is in standby.
  */
 
 /* EEPROM contents:

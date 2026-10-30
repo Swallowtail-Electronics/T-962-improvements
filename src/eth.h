@@ -34,8 +34,11 @@
  *   4  uint8 type            3
  *   5  uint8 status          0 saved, 1 rejected, 2 EEPROM error
  *
- * A stored profile replaces CUSTOM #1 in RAM as well. It becomes the
- * selected profile unless a reflow is already running.
+ * A write is accepted only while the oven is in standby. The reply is
+ * sent after the EEPROM commit. That commit runs outside the packet
+ * handler, one page at a time. A saved profile replaces CUSTOM #1 in RAM
+ * and becomes the selected profile. Bake, reflow, and standby-fan reject
+ * the packet and leave the running curve unchanged.
  */
 
 #define ETH_IP_A 192
