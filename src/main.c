@@ -41,6 +41,7 @@
 #include "max31855.h"
 #include "systemfan.h"
 #include "setup.h"
+#include "eth.h"
 
 extern uint8_t logobmp[];
 extern uint8_t stopbmp[];
@@ -63,6 +64,7 @@ static char* format_about = \
 static char* help_text = \
 "\nT-962-controller serial interface.\n\n" \
 " about                   Show about + debug information\n" \
+" eth                     Show ENC28J60 status\n" \
 " bake <setpoint>         Enter Bake mode with setpoint\n" \
 " bake <setpoint> <time>  Enter Bake mode with setpoint for <time> seconds\n" \
 " help                    Display help text\n" \
@@ -130,6 +132,7 @@ int main(void) {
 	SPI_TC_Init();
 	Reflow_Init();
 	SystemFan_Init();
+	Eth_Init();
 
 	Sched_SetWorkfunc(MAIN_WORK, Main_Work);
 	Sched_SetState(MAIN_WORK, 1, TICKS_SECS(2)); // Enable in 2 seconds
@@ -232,6 +235,9 @@ static int32_t Main_Work(void) {
 			} else if (strcmp(serial_cmd, "quiet") == 0) {
 				Reflow_ToggleStandbyLogging();
 				printf("\nToggled standby logging\n");
+
+			} else if (strcmp(serial_cmd, "eth") == 0) {
+				Eth_PrintStatus();
 
 			} else if (strcmp(serial_cmd, "values") == 0) {
 				printf("\nActual measured values:\n");

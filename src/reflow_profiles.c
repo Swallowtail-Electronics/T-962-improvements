@@ -180,6 +180,183 @@ int Reflow_SaveEEProfile(void) {
 	return retval;
 }
 
+// CUSTOM #1 EEPROM image is 48 big-endian words at address 2.
+#define CUSTOM1_BYTES (NUMPROFILETEMPS * 2)
+
+enum {
+	C1_IDLE = 0,
+	C1_DATA,
+	C1_MAGIC_LO,
+	C1_MAGIC_HI,
+	C1_REVERT,
+	C1_REVERT_LO,
+	C1_REVERT_HI
+};
+
+static uint8_t c1_phase = C1_IDLE;
+static uint8_t c1_pos = 0;
+static uint8_t c1_fail = 0;
+static uint8_t c1_bytes[CUSTOM1_BYTES];
+
+// One EEPROM page is 8 bytes. A page program is about 5 ms, so the caller
+// writes a single page and then returns to the scheduler.
+static int write_one_page(uint8_t addr, uint8_t* src, uint8_t left) {
+	uint8_t room = (uint8_t)(8u - (addr & 7u));
+	uint8_t n = left < room ? left : room;
+	if (n == 0 || EEPROM_Write(addr, src, n)) {
+		return -1;
+	}
+	return n;
+}
+
+static void begin_revert(void) {
+	c1_pos = 0;
+	c1_phase = C1_REVERT;
+}
+
+// Previous curve, as currently running in RAM, in EEPROM byte order.
+static void previous_page(uint8_t* dst, uint8_t pos, uint8_t n) {
+	for (uint8_t i = 0; i < n; i++) {
+		uint8_t index = (uint8_t)(pos + i);
+		uint16_t value = ee1.temperatures[index >> 1];
+		dst[i] = (index & 1u) ? (uint8_t)value : (uint8_t)(value >> 8);
+	}
+}
+
+int Reflow_WriteCustom1(const uint16_t* temps) {
+	if (!temps || c1_phase != C1_IDLE) {
+		return -1;
+	}
+	// Bake, reflow, and standby-fan keep the curve they started with.
+	if (Reflow_GetMode() != REFLOW_STANDBY) {
+		return -1;
+	}
+	for (int i = 0; i < NUMPROFILETEMPS; i++) {
+		uint16_t value = temps[i];
+		// 0 ends the curve. Any other point has to be a legal setpoint.
+		if (value > SETPOINT_MAX || (value != 0 && value < SETPOINT_MIN)) {
+			return -1;
+		}
+		c1_bytes[i * 2] = (uint8_t)(value >> 8);
+		c1_bytes[i * 2 + 1] = (uint8_t)value;
+	}
+	c1_pos = 0;
+	c1_fail = 0;
+	c1_phase = C1_DATA;
+	return 0;
+}
+
+int Reflow_ServiceCustom1(void) {
+	uint8_t scratch[8];
+	int n;
+
+	if (c1_phase == C1_IDLE) {
+		return -3;
+	}
+
+	// Stop before the first byte when the oven has left standby. After any
+	// byte has been programmed, finish by restoring the RAM curve to EEPROM
+	// so a torn image is not what the next boot loads.
+	if (c1_phase == C1_DATA && Reflow_GetMode() != REFLOW_STANDBY) {
+		if (c1_pos == 0) {
+			c1_phase = C1_IDLE;
+			return -1;
+		}
+		begin_revert();
+		return 1;
+	}
+
+	if (c1_phase == C1_DATA) {
+		n = write_one_page((uint8_t)(2 + c1_pos), c1_bytes + c1_pos, (uint8_t)(CUSTOM1_BYTES - c1_pos));
+		if (n < 0) {
+			c1_fail = 1;
+			begin_revert();
+			return 1;
+		}
+		c1_pos = (uint8_t)(c1_pos + n);
+		if (c1_pos >= CUSTOM1_BYTES) {
+			c1_phase = C1_MAGIC_LO;
+		}
+		return 1;
+	}
+
+	if (c1_phase == C1_MAGIC_LO) {
+		scratch[0] = 0x56;
+		scratch[1] = 0x57;
+		if (EEPROM_Write(0, scratch, 2)) {
+			c1_fail = 1;
+			begin_revert();
+			return 1;
+		}
+		c1_phase = C1_MAGIC_HI;
+		return 1;
+	}
+
+	if (c1_phase == C1_MAGIC_HI) {
+		scratch[0] = 0x58;
+		scratch[1] = 0x59;
+		if (EEPROM_Write(0x7e, scratch, 2)) {
+			c1_fail = 1;
+			begin_revert();
+			return 1;
+		}
+		// The live curve changes only while standby still holds. The EEPROM
+		// image is restored below when a run started during the commit.
+		if (Reflow_GetMode() == REFLOW_STANDBY) {
+			for (int i = 0; i < NUMPROFILETEMPS; i++) {
+				ee1.temperatures[i] = ((uint16_t)c1_bytes[i * 2] << 8) | c1_bytes[i * 2 + 1];
+			}
+			Reflow_SelectCustom1();
+			c1_phase = C1_IDLE;
+			return 0;
+		}
+		begin_revert();
+		return 1;
+	}
+
+	if (c1_phase == C1_REVERT) {
+		uint8_t left = (uint8_t)(CUSTOM1_BYTES - c1_pos);
+		uint8_t count = (uint8_t)(8u - ((2 + c1_pos) & 7u));
+		if (count > left) {
+			count = left;
+		}
+		previous_page(scratch, c1_pos, count);
+		if (EEPROM_Write((uint8_t)(2 + c1_pos), scratch, count)) {
+			c1_phase = C1_IDLE;
+			return -2;
+		}
+		c1_pos = (uint8_t)(c1_pos + count);
+		if (c1_pos >= CUSTOM1_BYTES) {
+			c1_phase = C1_REVERT_LO;
+		}
+		return 1;
+	}
+
+	if (c1_phase == C1_REVERT_LO) {
+		scratch[0] = 0x56;
+		scratch[1] = 0x57;
+		if (EEPROM_Write(0, scratch, 2)) {
+			c1_phase = C1_IDLE;
+			return -2;
+		}
+		c1_phase = C1_REVERT_HI;
+		return 1;
+	}
+
+	// C1_REVERT_HI. RAM was never updated, and EEPROM matches it again.
+	scratch[0] = 0x58;
+	scratch[1] = 0x59;
+	c1_phase = C1_IDLE;
+	if (EEPROM_Write(0x7e, scratch, 2)) {
+		return -2;
+	}
+	return c1_fail ? -2 : -1;
+}
+
+int Reflow_SelectCustom1(void) {
+	return Reflow_SelectProfileIdx(NUMPROFILES - 2);
+}
+
 void Reflow_ListProfiles(void) {
 	for (int i = 0; i < NUMPROFILES; i++) {
 		printf("%d: %s\n", i, profiles[i]->name);
