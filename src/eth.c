@@ -309,6 +309,7 @@ static int enc_tx(const uint8_t* frame, uint16_t len) {
 	/* Control byte at TXSTART, then the frame. ETXND is the last byte. */
 	enc_w16(EWRPTL, TXSTART);
 	enc_w16(ETXNDL, TXSTART + len);
+	enc_w16(ETXSTL, TXSTART);
 	spi_begin();
 	spi_xfer(ENC_WBM);
 	spi_xfer(0x00);
